@@ -1,0 +1,22 @@
+{
+  "code_name": "bb_l6_m6_A[x3+y1+y2]_B[y3+x1+x2]",
+  "n": 72,
+  "k": 12,
+  "distance": null,
+  "distance_method": null,
+  "basis": "Z",
+  "rounds": 6,
+  "shots": 10000,
+  "noise": {
+    "after_clifford_depolarization": 0.005,
+    "before_round_data_depolarization": 0.005,
+    "after_reset_flip_probability": 0.005,
+    "before_measure_flip_probability": 0.005
+  },
+  "num_detectors": 432,
+  "num_observables": 12,
+  "detector_format": "b8",
+  "observable_format": "b8",
+  "detectors_file": "bb_l6_m6_r6_Z.dets.b8",
+  "observables_file": "bb_l6_m6_r6_Z.obs.b8"
+}

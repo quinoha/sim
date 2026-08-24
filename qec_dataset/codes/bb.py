@@ -10,15 +10,18 @@ l*m qubits each (the standard bivariate-bicycle construction, e.g. Bravyi
 et al. 2024). x and y are represented as commuting cyclic-shift
 permutation matrices, so Hx @ Hz.T = A B + B A = 0 (mod 2) automatically.
 
-This module intentionally does NOT ship literature "preset" parameter
-sets (e.g. the paper's [[72,12,6]] / [[144,12,12]] codes) — getting the
-exact monomial exponents right requires checking them against the source
-paper. Callers supply (l, m, A-terms, B-terms) directly; presets can be
-added later once cross-checked against the paper.
+Literature presets are provided in `BB_PRESETS` / `build_bb_preset()`.
+Their (l, m, A, B) parameters were cross-checked against the independent
+implementation in `astra/bb_panq_functions.py:bb_code()` (which follows
+`codes_q.create_bivariate_bicycle_codes`): for all six presets this
+module's Hx/Hz come out **bit-identical** to that implementation's, so the
+two can share trained models and parity-check matrices directly.
+Callers can also supply (l, m, A-terms, B-terms) directly.
 """
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -102,3 +105,90 @@ def build_bb_code(l: int, m: int, a_terms: list[Term], b_terms: list[Term], name
         b_str = "+".join(f"{v}{p}" for v, p in b_terms)
         name = f"bb_l{l}_m{m}_A[{a_str}]_B[{b_str}]"
     return CSSCode(name=name, Hx=Hx, Hz=Hz)
+
+
+@dataclass(frozen=True)
+class BBPreset:
+    """A known-good (l, m, A, B) parameter set for a BB code."""
+
+    l: int
+    m: int
+    a_terms: tuple[Term, ...]
+    b_terms: tuple[Term, ...]
+    n: int
+    k: int
+    distance: int
+    distance_is_upper_bound: bool = False
+
+    @property
+    def label(self) -> str:
+        le = "<=" if self.distance_is_upper_bound else ""
+        return f"[[{self.n},{self.k},{le}{self.distance}]]"
+
+
+# Bivariate bicycle codes from the literature (Bravyi et al. 2024,
+# "High-threshold and low-overhead fault-tolerant quantum memory").
+# Keyed by nominal distance, matching astra/bb_panq_functions.py:bb_code(d).
+# Distances marked `distance_is_upper_bound` are recorded in that source as
+# upper bounds ("<=") rather than proven distances -- this module does not
+# independently verify any of these distances; use distance.search_distance
+# if you need to check one.
+BB_PRESETS: dict[int, BBPreset] = {
+    6: BBPreset(
+        l=6, m=6,
+        a_terms=(("x", 3), ("y", 1), ("y", 2)),
+        b_terms=(("y", 3), ("x", 1), ("x", 2)),
+        n=72, k=12, distance=6,
+    ),
+    10: BBPreset(
+        l=15, m=3,
+        a_terms=(("x", 9), ("y", 1), ("y", 2)),
+        b_terms=(("y", 0), ("x", 2), ("x", 7)),
+        n=90, k=8, distance=10,
+    ),
+    12: BBPreset(
+        l=12, m=6,
+        a_terms=(("x", 3), ("y", 1), ("y", 2)),
+        b_terms=(("y", 3), ("x", 1), ("x", 2)),
+        n=144, k=12, distance=12,
+    ),
+    18: BBPreset(
+        l=12, m=12,
+        a_terms=(("x", 3), ("y", 2), ("y", 7)),
+        b_terms=(("y", 3), ("x", 1), ("x", 2)),
+        n=288, k=12, distance=18,
+    ),
+    24: BBPreset(
+        l=30, m=6,
+        a_terms=(("x", 9), ("y", 1), ("y", 2)),
+        b_terms=(("y", 3), ("x", 25), ("x", 26)),
+        n=360, k=12, distance=24, distance_is_upper_bound=True,
+    ),
+    34: BBPreset(
+        l=21, m=18,
+        a_terms=(("x", 3), ("y", 10), ("y", 17)),
+        b_terms=(("y", 5), ("x", 3), ("x", 19)),
+        n=756, k=16, distance=34, distance_is_upper_bound=True,
+    ),
+}
+
+
+def build_bb_preset(distance: int) -> CSSCode:
+    """Builds a literature BB code preset by its nominal distance.
+
+    Verifies the resulting n and k against the recorded values (the
+    distance itself is NOT verified -- see BB_PRESETS).
+    """
+    if distance not in BB_PRESETS:
+        raise ValueError(
+            f"no BB preset for distance {distance}; available: {sorted(BB_PRESETS)}"
+        )
+    p = BB_PRESETS[distance]
+    code = build_bb_code(
+        p.l, p.m, list(p.a_terms), list(p.b_terms), name=f"bb_{p.n}_{p.k}_{p.distance}"
+    )
+    if code.n != p.n or code.k != p.k:
+        raise ValueError(
+            f"BB preset d={distance} mismatch: built [[{code.n},{code.k}]], expected [[{p.n},{p.k}]]"
+        )
+    return code

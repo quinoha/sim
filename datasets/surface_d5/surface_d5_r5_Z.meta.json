@@ -1,0 +1,22 @@
+{
+  "code_name": "rotated_surface_d5",
+  "n": 25,
+  "k": 1,
+  "distance": 5,
+  "distance_method": "known_parameter",
+  "basis": "Z",
+  "rounds": 5,
+  "shots": 10000,
+  "noise": {
+    "after_clifford_depolarization": 0.01,
+    "before_round_data_depolarization": 0.01,
+    "after_reset_flip_probability": 0.01,
+    "before_measure_flip_probability": 0.01
+  },
+  "num_detectors": 120,
+  "num_observables": 1,
+  "detector_format": "b8",
+  "observable_format": "b8",
+  "detectors_file": "surface_d5_r5_Z.dets.b8",
+  "observables_file": "surface_d5_r5_Z.obs.b8"
+}
