@@ -1,6 +1,25 @@
-stim>=1.16
-sinter>=1.16
-numpy>=2.0
-pytest>=8.0
-pymatching>=2.2
-stimbposd>=0.2
+# ==============================================================================
+# QEDA / QEC Test Vector Generator & Simulator Pipeline
+# Recommended Python: 3.11+ 
+# ==============================================================================
+
+# --- Stage 1: Config Resolver & Schema Validation (SetupBuilder) ---
+pydantic>=2.7.0,<3.0.0
+pyyaml>=6.0.1
+
+# --- Stage 2: QEC Quantum Circuit Simulation & Sinter Sampling (EvaluationRunner) ---
+stim>=1.16.0
+sinter>=1.16.0
+
+# --- Decoders: MWPM & BP-OSD ---
+pymatching>=2.2.0
+stimbposd>=0.2.0
+ldpc>=0.1.50
+
+# --- Scientific Computing & Linear Algebra ---
+numpy>=1.26.0
+scipy>=1.11.0
+
+# --- Testing & Quality Assurance ---
+pytest>=8.0.0
+pytest-cov>=4.1.0
