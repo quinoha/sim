@@ -34,6 +34,15 @@ class RunEvidence(BaseModel):
     status: str = "SUCCESS"
     error_message: Optional[str] = None
 
+    # Why sampling stopped: "min_failures" once the declared failure count was
+    # reached, "max_shots" when the budget ran out first, "fixed" when a caller
+    # asked for an exact shot count. Without it a low `errors` reading is
+    # ambiguous -- a genuinely good decoder and an under-powered run look alike.
+    stopped_by: str = "fixed"
+    # Shots this RunSpec's decoder actually consumed, against the shared pool it
+    # was drawn from. Equal to `shots` unless the stopping rule ended it early.
+    workload_id: Optional[str] = None
+
 
 class EvidenceBundle(BaseModel):
     """
