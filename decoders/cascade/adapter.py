@@ -184,6 +184,11 @@ class SurfaceCascadeDecoder:
         self.device = torch.device(
             device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
         )
+        if self.device.type == "cuda":
+            # Every forward here runs the same shapes, so letting cuDNN benchmark its
+            # algorithms once pays off for the rest of the run. It costs a slower first
+            # call, which is why callers should warm up before timing anything.
+            torch.backends.cudnn.benchmark = True
 
         if mask_mode == "checkerboard":
             # Reproduces what the checkpoints in checkpoints/ were trained with.

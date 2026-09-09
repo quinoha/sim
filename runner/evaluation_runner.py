@@ -57,7 +57,7 @@ class EvaluationRunner:
         input grid from the circuit's DETECTOR coordinates, and its time kernel is
         sized for a specific round count, so one callable cannot serve every
         RunSpec in a plan. Built instances are cached per (decoder_id, code,
-        rounds, noise) so a sweep does not rebuild the same model repeatedly.
+        rounds, code_params) so a sweep does not rebuild the same model repeatedly.
         """
         self._decoder_factories[decoder_id] = factory
 
@@ -65,7 +65,11 @@ class EvaluationRunner:
         factory = self._decoder_factories.get(spec.decoder_id)
         if factory is None:
             return None
-        key = (spec.decoder_id, spec.code_id, int(spec.rounds), float(spec.noise_p))
+        # Noise is deliberately absent: a decoder built from a circuit depends on its
+        # detector geometry and round count, not on the error rate baked into it.
+        # Keying on noise_p rebuilt (and re-loaded from disk) the same model once per
+        # swept p value.
+        key = (spec.decoder_id, spec.code_id, int(spec.rounds), str(sorted(spec.code_params.items())))
         if key not in self._factory_cache:
             self._factory_cache[key] = factory(spec, circuit)
         return self._factory_cache[key]
@@ -74,7 +78,8 @@ class EvaluationRunner:
         self,
         spec: RunSpec,
         shots_override: Optional[int] = None,
-        num_workers: int = 4
+        num_workers: int = 4,
+        warmup_shots: int = 64,
     ) -> RunEvidence:
         """
         Executes a single RunSpec:
@@ -117,37 +122,39 @@ class EvaluationRunner:
         )
 
         # 4. Step 3: Pure Decoder Batch Inference & Latency Stopwatch
+        # Resolve the decoder first, so construction never lands inside the stopwatch
+        # and every candidate is timed under the same contract.
         factory_fn = self._resolve_factory(spec, circuit)
         if factory_fn is not None:
-            t_dec_start = time.perf_counter_ns()
-            predictions = factory_fn(dets)
-            pure_decode_ns = time.perf_counter_ns() - t_dec_start
-
+            decode_fn = factory_fn
         elif spec.decoder_id in self._custom_decoders:
             decode_fn = self._custom_decoders[spec.decoder_id]
-            t_dec_start = time.perf_counter_ns()
-            predictions = decode_fn(dets)
-            pure_decode_ns = time.perf_counter_ns() - t_dec_start
-
         elif spec.decoder_id == "pymatching":
-            dem = circuit.detector_error_model()
-            matcher = pymatching.Matching.from_detector_error_model(dem)
-
-            t_dec_start = time.perf_counter_ns()
-            predictions = matcher.decode_batch(dets)
-            pure_decode_ns = time.perf_counter_ns() - t_dec_start
-
+            decode_fn = pymatching.Matching.from_detector_error_model(
+                circuit.detector_error_model()
+            ).decode_batch
         elif spec.decoder_id in ("bposd_fast", "bposd"):
             osd_order = int(spec.decoder_options.get("osd_order", 10))
-            dem = circuit.detector_error_model()
-            decoder = stimbposd.BPOSD(dem, osd_order=osd_order)
-
-            t_dec_start = time.perf_counter_ns()
-            predictions = decoder.decode_batch(dets)
-            pure_decode_ns = time.perf_counter_ns() - t_dec_start
-
+            decode_fn = stimbposd.BPOSD(
+                circuit.detector_error_model(), osd_order=osd_order
+            ).decode_batch
         else:
             raise ValueError(f"Unknown or unsupported decoder_id '{spec.decoder_id}' for RunSpec '{spec.run_spec_id}'")
+
+        # Warm up outside the stopwatch. The first call into a decoder pays costs that
+        # have nothing to do with steady-state decoding -- for a GPU model that is
+        # cuDNN algorithm selection, caching-allocator growth and lazy CUDA module
+        # init, which measured ~860 ms on the first Cascade RunSpec of a run and made
+        # it look ~40% slower than the identical RunSpecs that followed it.
+        if warmup_shots > 0 and shots > 0:
+            try:
+                decode_fn(dets[: min(warmup_shots, shots)])
+            except Exception:  # noqa: BLE001 - a decoder that dislikes a short batch
+                pass           # is not a reason to abandon the measurement
+
+        t_dec_start = time.perf_counter_ns()
+        predictions = decode_fn(dets)
+        pure_decode_ns = time.perf_counter_ns() - t_dec_start
 
         # 5. Step 4: Grading against ground-truth observables (.obs.b8)
         # predictions and actual_obs shape: (shots, num_observables)
@@ -169,6 +176,7 @@ class EvaluationRunner:
             "pure_decode_time_ns": pure_decode_ns,
             "pure_decode_time_ms": pure_decode_ns / 1e6,
             "avg_latency_per_shot_us": avg_latency_ns / 1e3,
+            "warmup_shots": warmup_shots,
             "num_detectors": circuit.num_detectors,
             "num_observables": circuit.num_observables,
             "detectors_file": det_path.name,
@@ -202,6 +210,7 @@ class EvaluationRunner:
         quick: bool = False,
         quick_shots: int = 1000,
         num_workers: int = 4,
+        warmup_shots: int = 64,
         on_progress: Optional[Callable[[int, int, RunEvidence], None]] = None,
     ) -> EvidenceBundle:
         """
@@ -213,7 +222,10 @@ class EvaluationRunner:
         for idx, spec in enumerate(plan.run_specs, start=1):
             shots = quick_shots if quick else spec.shots
             try:
-                evidence = self.run_spec(spec, shots_override=shots, num_workers=num_workers)
+                evidence = self.run_spec(
+                    spec, shots_override=shots, num_workers=num_workers,
+                    warmup_shots=warmup_shots,
+                )
             except Exception as exc:  # noqa: BLE001
                 # One RunSpec must not take the matrix down with it. A plan can hold a
                 # decoder that only covers part of its own sweep -- a neural decoder
