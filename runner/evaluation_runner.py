@@ -119,8 +119,15 @@ class EvaluationRunner:
         """
         pool = dets.shape[0]
         if warmup_shots > 0 and pool > 0:
+            # A decoder that knows its own steady-state shape warms that shape itself.
+            # Handing it an arbitrary short slice would tune and allocate for a shape
+            # the timed calls never use, which is indistinguishable from no warmup.
+            own = getattr(getattr(decode_fn, "__self__", None), "warmup", None)
             try:
-                decode_fn(dets[: min(warmup_shots, pool)])
+                if callable(own):
+                    own(dets[: min(warmup_shots, pool)])
+                else:
+                    decode_fn(dets[: min(warmup_shots, pool)])
             except Exception:  # noqa: BLE001 - a decoder that dislikes a short batch
                 pass           # is not a reason to abandon the measurement
 

@@ -174,6 +174,9 @@ class SurfaceCascadeDecoder:
         self.num_observables = circuit.num_observables
         self.batch_size = batch_size
         self.mask_mode = mask_mode
+        # Padding buys one stable shape, which only matters where an autotuner and a
+        # caching allocator react to shape. On CPU it is pure wasted compute.
+        self.pad_batches = False
 
         if grid != distance + 1:
             raise ValueError(
@@ -184,6 +187,7 @@ class SurfaceCascadeDecoder:
         self.device = torch.device(
             device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
         )
+        self.pad_batches = self.device.type == "cuda"
         if self.device.type == "cuda":
             # Every forward here runs the same shapes, so letting cuDNN benchmark its
             # algorithms once pays off for the rest of the run. It costs a slower first
@@ -263,12 +267,43 @@ class SurfaceCascadeDecoder:
 
     @torch.no_grad()
     def decode_batch(self, dets: np.ndarray) -> np.ndarray:
-        out = np.empty((dets.shape[0], self.num_observables), dtype=np.uint8)
-        for start in range(0, dets.shape[0], self.batch_size):
+        total = dets.shape[0]
+        out = np.empty((total, self.num_observables), dtype=np.uint8)
+
+        # Pad the trailing partial chunk up to batch_size so every forward runs one
+        # single shape. cuDNN's autotuner keys its algorithm choice on shape, and so
+        # does the caching allocator's block reuse, so a run that feeds 8192, 8192,
+        # 8192, 424 pays a fresh benchmark and a fresh cudaMalloc for that 424 --
+        # once per chunk boundary, which is why early calls look slower than steady
+        # state. Only worth it when there is more than one chunk; a lone short call
+        # would just be padded compute.
+        pad_to = self.batch_size if (self.pad_batches and total > self.batch_size) else None
+
+        for start in range(0, total, self.batch_size):
             chunk = dets[start : start + self.batch_size]
+            n = chunk.shape[0]
+            if pad_to is not None and n < pad_to:
+                chunk = np.concatenate(
+                    [chunk, np.zeros((pad_to - n, chunk.shape[1]), dtype=chunk.dtype)]
+                )
             logits = self.model(self.to_syndrome_indices(chunk))
-            out[start : start + chunk.shape[0]] = (logits > 0).to(torch.uint8).cpu().numpy()
+            out[start : start + n] = (logits > 0).to(torch.uint8).cpu().numpy()[:n]
         return out
+
+    def warmup(self, dets: np.ndarray | None = None, reps: int = 2) -> None:
+        """Runs the shape this decoder will actually use, so timed calls do not.
+
+        Sized at `batch_size` rather than at whatever short slice a caller has to
+        hand: warming up on a 64-shot slice leaves the real shape un-tuned and
+        un-allocated, which is the same as not warming up at all.
+        """
+        if dets is None or dets.shape[0] == 0:
+            probe = np.zeros((self.batch_size, self.num_detectors), dtype=np.uint8)
+        else:
+            reps_needed = -(-self.batch_size // dets.shape[0])
+            probe = np.concatenate([dets] * reps_needed)[: self.batch_size]
+        for _ in range(max(reps, 1)):
+            self.decode_batch(probe)
 
     def __call__(self, dets: np.ndarray) -> np.ndarray:
         return self.decode_batch(dets)
