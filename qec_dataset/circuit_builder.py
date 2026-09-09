@@ -104,7 +104,17 @@ def build_circuit_from_run_spec(
     Returns:
         stim.Circuit ready for sinter sampling or error analysis.
     """
-    cache_key = (run_spec.code_id, float(run_spec.noise_p), int(run_spec.rounds), basis.upper())
+    # code_params belongs in the key: `code_id` is a label a config author picks, and
+    # editing `distance` while leaving the id alone (surface_d5 -> distance 7, say) is
+    # an easy edit to make. Without the params here the cache would hand back the
+    # previous distance's circuit under the unchanged id, silently.
+    cache_key = (
+        run_spec.code_id,
+        tuple(sorted((k, str(v)) for k, v in run_spec.code_params.items())),
+        float(run_spec.noise_p),
+        int(run_spec.rounds),
+        basis.upper(),
+    )
 
     if use_cache and cache_key in _CIRCUIT_CACHE:
         return _CIRCUIT_CACHE[cache_key].copy()
