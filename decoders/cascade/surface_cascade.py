@@ -3,9 +3,9 @@ import math
 import torch
 import torch.nn as nn
 
-from cascade.model.bottleneck import BottleneckBlock3d
-from cascade.model.embedding import SyndromeEmbedding
-from cascade.model.readout import Readout
+from .bottleneck import BottleneckBlock3d
+from .embedding import SyndromeEmbedding
+from .readout import Readout
 
 
 class SurfaceCascade(nn.Module):
