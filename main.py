@@ -110,6 +110,54 @@ def print_runspec_table(plan: EvaluationPlan) -> None:
     print(separator)
 
 
+def register_neural_decoders(runner, plan: EvaluationPlan) -> None:
+    """Wires any Cascade decoders declared in the plan into the runner.
+
+    Registered as a *factory* rather than a plain callable: Cascade derives its
+    input grid from the circuit's DETECTOR coordinates and its readout time
+    kernel is sized for one specific round count, so a single callable cannot
+    serve every RunSpec in a sweep. torch is imported lazily so the reference
+    decoder path keeps working on an environment without it.
+    """
+    neural = {s.decoder_id for s in plan.run_specs if s.decoder_kind in ("astra_gnn", "custom")}
+    if not neural:
+        return
+
+    try:
+        from decoders.cascade.adapter import load_pretrained
+    except ImportError as e:
+        print(f"\n[Warning] Plan declares {sorted(neural)} but the Cascade decoder is "
+              f"unavailable ({e}). Those RunSpecs will be recorded as FAILED.\n"
+              f"          Install torch to enable them: pip install torch")
+        return
+
+    from compare_decoders import cascade_plan, find_checkpoints
+
+    ckpt_dir = find_checkpoints(None)
+
+    def make_factory(decoder_id: str):
+        def factory(spec, circuit):
+            options = dict(spec.decoder_options or {})
+            ckpt = options.pop("checkpoint", None)
+            if ckpt is None:
+                ckpt, why = cascade_plan(spec, ckpt_dir)
+                if ckpt is None:
+                    raise ValueError(why)
+            return load_pretrained(
+                circuit,
+                int(spec.code_params["distance"]),
+                ckpt,
+                batch_size=int(options.get("batch_size", 512)),
+                mask_mode=str(options.get("mask_mode", "checkerboard")),
+            ).decode_batch
+        return factory
+
+    for decoder_id in sorted(neural):
+        runner.register_decoder_factory(decoder_id, make_factory(decoder_id))
+    print(f"\n[Setup] Registered neural decoder(s): {', '.join(sorted(neural))} "
+          f"(checkpoints: {ckpt_dir if ckpt_dir else 'not found'})")
+
+
 def main() -> int:
     args = parse_args()
     config_path = Path(args.config)
@@ -150,8 +198,16 @@ def main() -> int:
             print("=" * 80)
 
             runner = EvaluationRunner(output_root="outputs/evidence")
+            register_neural_decoders(runner, plan)
 
             def on_progress(idx: int, total: int, evidence):
+                if evidence.status != "SUCCESS":
+                    print(
+                        f"[{idx:>2}/{total}] {evidence.code_id:<12} x {evidence.decoder_id:<10} "
+                        f"(p={evidence.noise_p:.4f}, r={evidence.rounds}) | "
+                        f"SKIPPED: {evidence.error_message}"
+                    )
+                    return
                 print(
                     f"[{idx:>2}/{total}] {evidence.code_id:<12} x {evidence.decoder_id:<10} "
                     f"(p={evidence.noise_p:.4f}, r={evidence.rounds}) | "
