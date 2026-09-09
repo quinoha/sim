@@ -97,7 +97,7 @@ def cascade_plan(spec, ckpt_dir: Path | None) -> tuple[str | None, str]:
     return str(path), ""
 
 
-def build_decoder(kind: str, spec, circuit, ckpt: str | None):
+def build_decoder(kind: str, spec, circuit, ckpt: str | None, cascade_batch: int = 512):
     """Returns (callable taking dets -> predictions, setup seconds)."""
     t0 = time.perf_counter()
     if kind == "pymatching":
@@ -113,7 +113,7 @@ def build_decoder(kind: str, spec, circuit, ckpt: str | None):
         from decoders.cascade.adapter import load_pretrained
 
         distance = int(spec.code_params["distance"])
-        fn = load_pretrained(circuit, distance, ckpt, batch_size=512).decode_batch
+        fn = load_pretrained(circuit, distance, ckpt, batch_size=cascade_batch).decode_batch
     else:
         raise ValueError(f"unknown decoder '{kind}'")
     return fn, time.perf_counter() - t0
@@ -178,6 +178,14 @@ def parse_args() -> argparse.Namespace:
         help="per-decoder shot budget, e.g. 'cascade=20000,bposd_fast=2000'. A decoder "
         "given fewer shots decodes a PREFIX of the same sample, so the comparison "
         "stays paired -- its shots are a subset of the others'.",
+    )
+    ap.add_argument(
+        "--cascade-batch",
+        type=int,
+        default=512,
+        help="Cascade forward batch size. 512 suits a CPU; on a GPU raise it a lot "
+        "(8k-64k). The model is tiny per shot (~41 kernel launches, 6x6x6 grid), so "
+        "small batches leave a GPU launch-bound rather than compute-bound.",
     )
     ap.add_argument("--checkpoints", default=None, help="Cascade checkpoint directory")
     ap.add_argument("--seed", type=int, default=12345, help="base for workload seed derivation")
@@ -285,7 +293,7 @@ def main() -> int:
                 skipped.append((name, f"skipped: {extra}"))
                 continue
             try:
-                fn, setup_s = build_decoder(name, spec, circuit, extra)
+                fn, setup_s = build_decoder(name, spec, circuit, extra, args.cascade_batch)
                 live[name] = {"fn": fn, "err": 0, "n": 0, "t": 0.0,
                               "cap": per_decoder_shots.get(name, max_shots)}
             except Exception as e:  # noqa: BLE001

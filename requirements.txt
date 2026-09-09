@@ -23,3 +23,23 @@ scipy>=1.11.0
 # --- Testing & Quality Assurance ---
 pytest>=8.0.0
 pytest-cov>=4.1.0
+
+# --- Optional: Cascade neural decoder (decoders/cascade/) ---
+# Deliberately NOT pinned here. The reference decoders and the whole
+# SetupBuilder/EvaluationRunner path run without torch; only
+# `decoders/cascade/` needs it, and the right wheel depends on the machine:
+#
+#   CPU only:   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   With a GPU: pick the CUDA build that matches the installed driver AND the
+#               card's compute capability. Blackwell (B100/B200/GB200 = sm_100,
+#               RTX 50-series = sm_120) needs a recent CUDA build; an older
+#               wheel installs fine and then fails at runtime with
+#               "no kernel image is available for execution on the device".
+#
+# Verify after installing:
+#   python -c "import torch; print(torch.__version__, torch.version.cuda); \
+#              print(torch.cuda.get_arch_list()); \
+#              print(torch.cuda.get_device_capability(0))"
+# get_arch_list() must contain the sm_ that get_device_capability() reports.
+#
+# torch>=2.4.0
