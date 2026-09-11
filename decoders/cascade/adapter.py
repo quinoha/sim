@@ -91,6 +91,17 @@ def checkpoint_architecture(state_dict: dict) -> dict:
     }
 
 
+def default_batch_size(device: torch.device) -> int:
+    """Forward batch size that suits the device this decoder landed on.
+
+    The model is tiny per shot -- a 6x6x6 grid through ~41 kernels -- so on a GPU
+    the cost is launch overhead, not arithmetic, and a CPU-sized batch leaves the
+    card idle between launches. On a CPU the opposite holds: a huge batch just
+    inflates the working set. Callers that know better still pass `batch_size`.
+    """
+    return 8192 if device.type == "cuda" else 512
+
+
 def detector_grid_map(circuit: stim.Circuit) -> dict:
     """Derives the (T, G, G) grid layout from a circuit's DETECTOR coordinates.
 
@@ -131,6 +142,23 @@ def detector_grid_map(circuit: stim.Circuit) -> dict:
         col[det_index] = x_to_col[c[0]]
 
     grid = len(xs)
+
+    # Two detectors landing on the same (layer, row, col) would make the scatter in
+    # `to_syndrome_indices` order-dependent: the later one silently overwrites the
+    # earlier, and the model decodes a syndrome the circuit never produced. Nothing
+    # downstream can notice, so it has to be caught here.
+    flat = (layer * grid + row) * grid + col
+    cells, counts = np.unique(flat, return_counts=True)
+    if counts.max(initial=0) > 1:
+        worst = int(cells[counts.argmax()])
+        t, rem = divmod(worst, grid * grid)
+        r, c = divmod(rem, grid)
+        raise ValueError(
+            f"{int((counts > 1).sum())} grid cell(s) carry more than one detector; this "
+            f"adapter needs at most one detector per (t, y, x) site. Worst offender: "
+            f"t={t}, row={r}, col={c} holds {int(counts.max())} detectors."
+        )
+
     valid_site_mask = np.zeros((grid, grid), dtype=bool)
     valid_site_mask[row, col] = True
 
@@ -161,7 +189,7 @@ class SurfaceCascadeDecoder:
         bottleneck_ratio: int = 4,
         weights: str | None = None,
         device: str | None = None,
-        batch_size: int = 1024,
+        batch_size: int | None = None,
         mask_mode: str = "stim",
     ):
         if mask_mode not in ("stim", "checkerboard"):
@@ -172,7 +200,6 @@ class SurfaceCascadeDecoder:
         self.T = self.map["T"]
         self.num_detectors = circuit.num_detectors
         self.num_observables = circuit.num_observables
-        self.batch_size = batch_size
         self.mask_mode = mask_mode
         # Padding buys one stable shape, which only matters where an autotuner and a
         # caching allocator react to shape. On CPU it is pure wasted compute.
@@ -187,6 +214,7 @@ class SurfaceCascadeDecoder:
         self.device = torch.device(
             device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
         )
+        self.batch_size = batch_size if batch_size is not None else default_batch_size(self.device)
         self.pad_batches = self.device.type == "cuda"
         if self.device.type == "cuda":
             # Every forward here runs the same shapes, so letting cuDNN benchmark its

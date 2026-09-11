@@ -143,11 +143,15 @@ def register_neural_decoders(runner, plan: EvaluationPlan) -> None:
                 ckpt, why = cascade_plan(spec, ckpt_dir)
                 if ckpt is None:
                     raise ValueError(why)
+            batch_size = options.get("batch_size")
             return load_pretrained(
                 circuit,
                 int(spec.code_params["distance"]),
                 ckpt,
-                batch_size=int(options.get("batch_size", 512)),
+                # Left unset, the adapter sizes the batch for whatever device it
+                # lands on -- a CPU default would leave a GPU host launch-bound.
+                batch_size=int(batch_size) if batch_size is not None else None,
+                device=options.get("device"),
                 mask_mode=str(options.get("mask_mode", "checkerboard")),
             ).decode_batch
         return factory

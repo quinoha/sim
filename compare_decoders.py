@@ -97,7 +97,26 @@ def cascade_plan(spec, ckpt_dir: Path | None) -> tuple[str | None, str]:
     return str(path), ""
 
 
-def build_decoder(kind: str, spec, circuit, ckpt: str | None, cascade_batch: int = 512):
+def warm_up(fn, dets: np.ndarray) -> None:
+    """Pays the first-call cost before the stopwatch starts.
+
+    A decoder that knows its own steady-state shape warms that shape itself: on a
+    GPU, cuDNN benchmarks its algorithms per shape and the caching allocator
+    reserves blocks per shape, so warming on a 32-shot slice tunes for a shape the
+    timed calls never use -- which is the same as not warming up at all, except it
+    looks like it worked. Everything else just gets the short slice.
+    """
+    own = getattr(getattr(fn, "__self__", None), "warmup", None)
+    try:
+        if callable(own):
+            own(dets)
+        else:
+            fn(dets[:32])
+    except Exception:  # noqa: BLE001 - a decoder that dislikes a short batch is not
+        pass           # a reason to abandon the measurement
+
+
+def build_decoder(kind: str, spec, circuit, ckpt: str | None, cascade_batch: int | None = None):
     """Returns (callable taking dets -> predictions, setup seconds)."""
     t0 = time.perf_counter()
     if kind == "pymatching":
@@ -182,10 +201,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--cascade-batch",
         type=int,
-        default=512,
-        help="Cascade forward batch size. 512 suits a CPU; on a GPU raise it a lot "
-        "(8k-64k). The model is tiny per shot (~41 kernel launches, 6x6x6 grid), so "
-        "small batches leave a GPU launch-bound rather than compute-bound.",
+        default=None,
+        help="Cascade forward batch size. Defaults to 512 on a CPU and 8192 on a GPU. "
+        "The model is tiny per shot (~41 kernel launches, 6x6x6 grid), so small "
+        "batches leave a GPU launch-bound rather than compute-bound; 8k-64k is the "
+        "useful range there, and worth tuning per card.",
     )
     ap.add_argument("--checkpoints", default=None, help="Cascade checkpoint directory")
     ap.add_argument("--seed", type=int, default=12345, help="base for workload seed derivation")
@@ -317,8 +337,8 @@ def main() -> int:
                 if st["n"] >= st["cap"] or (min_failures and st["err"] >= min_failures):
                     continue
                 room = min(take, st["cap"] - st["n"])
-                if name not in ("__warm__",) and st["n"] == 0:
-                    st["fn"](dets[: min(32, room)])
+                if st["n"] == 0:
+                    warm_up(st["fn"], dets[:room])
                 t0 = time.perf_counter()
                 pred = st["fn"](dets[:room])
                 st["t"] += time.perf_counter() - t0
